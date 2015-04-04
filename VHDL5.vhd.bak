@@ -1,0 +1,315 @@
+LIBRARY ieee;
+USE ieee.std_logic_1164.ALL;
+USE ieee.numeric_std.ALL;
+USE ieee.std_logic_unsigned.ALL;
+
+--
+-- 7-segment display driver. It displays a 4-bit number on 7-segments 
+-- This is created as an entity so that it can be reused many times easily
+--
+
+ENTITY SevenSegment IS PORT (
+   
+   dataIn      :  IN  std_logic_vector(3 DOWNTO 0);   -- The 4 bit data to be displayed
+   blanking    :  IN  std_logic;                      -- This bit turns off all segments
+   
+   segmentsOut :  OUT std_logic_vector(6 DOWNTO 0)    -- 7-bit outputs to a 7-segment
+); 
+END SevenSegment;
+
+ARCHITECTURE Behavioral OF SevenSegment IS
+
+-- 
+-- The following statements convert a 4-bit input, called dataIn to a pattern of 7 bits
+-- The segment turns on when it is '0' otherwise '1'
+-- The blanking input is added to turns off the all segments
+--
+
+BEGIN
+
+   with blanking & dataIn SELECT --  gfedcba        b3210      -- D7S
+      segmentsOut(6 DOWNTO 0) <=    "1000000" WHEN "00000",    -- [0]
+                                    "1111001" WHEN "00001",    -- [1]
+                                    "0100100" WHEN "00010",    -- [2]      +---- a ----+
+                                    "0110000" WHEN "00011",    -- [3]      |           |
+                                    "0011001" WHEN "00100",    -- [4]      |           |
+                                    "0010010" WHEN "00101",    -- [5]      f           b
+                                    "0000010" WHEN "00110",    -- [6]      |           |
+                                    "1111000" WHEN "00111",    -- [7]      |           |
+                                    "0000000" WHEN "01000",    -- [8]      +---- g ----+
+                                    "0010000" WHEN "01001",    -- [9]      |           |
+                                    "0001000" WHEN "01010",    -- [A]      |           |
+                                    "0000011" WHEN "01011",    -- [b]      e           c
+                                    "0100111" WHEN "01100",    -- [c]      |           |
+                                    "0100001" WHEN "01101",    -- [d]      |           |
+                                    "0000110" WHEN "01110",    -- [E]      +---- d ----+
+                                    "0001110" WHEN "01111",    -- [F]
+                                    "1111111" WHEN OTHERS;     -- [ ]
+
+END Behavioral;
+
+--------------------------------------------------------------------------------
+-- Main entity
+--------------------------------------------------------------------------------
+
+LIBRARY ieee;
+USE ieee.std_logic_1164.ALL;
+USE ieee.numeric_std.ALL;
+
+ENTITY Lab5 IS
+   PORT(
+      
+      clock_50   : IN  STD_LOGIC;
+      sw         : IN  STD_LOGIC_VECTOR(17 DOWNTO 0); -- 18 dip switches on the board
+
+      ledr       : OUT STD_LOGIC_VECTOR(17 DOWNTO 0); -- LEDs, many Red ones are available
+      ledg       : OUT STD_LOGIC_VECTOR( 8 DOWNTO 0); -- LEDs, many Green ones are available
+      hex0, hex2, hex4, hex6 : OUT STD_LOGIC_VECTOR( 6 DOWNTO 0)  -- seven segments to display numbers
+);
+END Lab5;
+
+ARCHITECTURE SimpleCircuit OF Lab5 IS
+
+--
+-- In order to use the "SevenSegment" entity, we should declare it with first
+-- 
+
+   COMPONENT SevenSegment PORT(        -- Declare the 7 segment component to be used
+      dataIn      : IN  STD_LOGIC_VECTOR(3 DOWNTO 0);
+      blanking    : IN  STD_LOGIC;
+      segmentsOut : OUT STD_LOGIC_VECTOR(6 DOWNTO 0)
+   );
+   END COMPONENT;
+----------------------------------------------------------------------------------------------------
+   CONSTANT CLK_DIV_SIZE: INTEGER := 25;     -- size of vectors for the counters
+
+   SIGNAL Main1HzCLK:   STD_LOGIC; -- main 1Hz clock to drive FSM
+   SIGNAL OneHzBinCLK:  STD_LOGIC; -- binary 1 Hz clock
+   SIGNAL OneHzModCLK:  STD_LOGIC; -- modulus1 Hz clock
+   SIGNAL TenHzModCLK:  STD_LOGIC; -- modulus1 Hz clock
+   SIGNAL Operation:    STD_LOGIC; -- Operation switch
+   SIGNAL Default:      STD_LOGIC; -- Default road switch
+   SIGNAL NS:			STD_LOGIC; -- NS Sensor
+   SIGNAL EW:			STD_LOGIC; -- EW Sensor
+
+   SIGNAL bin_counter:  UNSIGNED(CLK_DIV_SIZE-1 DOWNTO 0) := to_unsigned(0,CLK_DIV_SIZE); -- reset binary counter to zero
+   SIGNAL mod_counter:  UNSIGNED(CLK_DIV_SIZE-1 DOWNTO 0) := to_unsigned(0,CLK_DIV_SIZE); -- reset modulus counter to zero
+   SIGNAL mod_terminal: UNSIGNED(CLK_DIV_SIZE-1 DOWNTO 0) := to_unsigned(0,CLK_DIV_SIZE); -- reset terminal count of modulus counter to zero
+   SIGNAL Ten_counter: 	UNSIGNED(CLK_DIV_SIZE-1 DOWNTO 0) := to_unsigned(0,CLK_DIV_SIZE);
+   SIGNAL Two_counter:  UNSIGNED(1 DOWNTO 0) := to_unsigned(0,2);
+   SIGNAL Four_counter: UNSIGNED(1 DOWNTO 0) := to_unsigned(0,2);
+   SIGNAL reg:         	UNSIGNED(3 DOWNTO 0) := to_unsigned(0,4);
+   SIGNAL NSC:			UNSIGNED(3 DOWNTO 0) := to_unsigned(0,4); -- North South wait counter
+   SIGNAL EWC:			UNSIGNED(3 DOWNTO 0) := to_unsigned(0,4); -- East West wait counter
+   SIGNAL dreg:        	UNSIGNED(3 DOWNTO 0) := to_unsigned(0,4); -- reg displayed
+   
+   TYPE STATES IS (STATE0, STATE1, STATE2, STATE3, STATE4, STATE5);   -- list all the STATES
+   SIGNAL state, next_state:  STATES;                 -- current and next state signals od type STATES
+   
+   SIGNAL state_number: STD_LOGIC_VECTOR(3 DOWNTO 0); -- binary state number to display on seven-segment
+   SIGNAL cur_state:	STD_LOGIC_VECTOR(3 DOWNTO 0); -- Current State for reset
+   
+   SIGNAL state_counter: UNSIGNED(3 DOWNTO 0);        -- binary state counter to display on seven-segment
+----------------------------------------------------------------------------------------------------
+
+BEGIN
+
+   ONECLK: PROCESS(clock_50) 
+   BEGIN
+      IF (rising_edge(clock_50)) THEN -- modulus counter increments on rising clock edge
+         IF (mod_counter = "1011111010111100000111111") THEN      
+            OneHzModCLK <= NOT OneHzModCLK;                 -- toggle
+            mod_counter <= to_unsigned(0,CLK_DIV_SIZE); -- reset counter
+         
+         ELSE
+            mod_counter <= mod_counter + 1;
+         END IF;
+      END IF;
+   END PROCESS;
+   LEDG(1) <= Main1HzCLK;
+   LEDG(0) <= TenHzModCLK;
+----------------------------------------------------------------------------------------------------
+   TENCLK: PROCESS(clock_50) 
+   BEGIN
+      IF (rising_edge(clock_50)) THEN -- modulus counter increments on rising clock edge
+         IF (Ten_counter = "0001001100010010110011111" ) THEN   
+            TenHzModCLK <= NOT TenHzModCLK;                 -- toggle
+            Ten_counter <= to_unsigned(0,CLK_DIV_SIZE); -- reset counter
+         ELSE
+            Ten_counter <= Ten_counter + 1;
+         END IF;
+      END IF;
+   END PROCESS;
+----------------------------------------------------------------------------------------------------
+   Main1HzCLK <= OneHzModCLK; -- assigns either binary or modulus clock as main clock
+----------------------------------------------------------------------------------------------------
+
+   FSM: PROCESS(state, Main1HzCLK) -- main FSM
+   BEGIN
+	--IF (rising_edge(Main1HzCLK)) THEN
+   	--	 dreg <= dreg + 1;	
+	--END IF;
+--      next_state <= state; 	-- The only purpose of this line is to give initial value to the signal 'next_state' in order to avoid latch creation. 
+      CASE state IS
+         WHEN STATE0 =>
+            state_number <= "0000";
+            IF ( Operation = '1' and Default = '0') THEN
+			   ledg(8) <= '1';
+			ELSE
+			   ledg(8) <= TenHzModCLK;
+			END IF;
+            ledr(0) <= '1';
+            ledr(11)<= '0';
+            ledg(7) <= '0';
+            IF (reg = "0001") THEN 
+         --      dreg <= to_unsigned(0,4);
+               next_state <= STATE1;
+			ELSE
+         --   dreg <= to_unsigned(0,4);
+               next_state <= STATE0;
+            END IF;
+		 WHEN STATE1 =>
+            state_number <= "0001";
+            ledr(0) <= '1';
+            ledg(8) <= '1';
+            ledr(11)<= '0';
+
+            
+
+            ledg(7) <= '0';
+            IF (reg = "0101") THEN
+               next_state <= STATE2;
+            ELSE
+               next_state <= STATE1;
+            END IF;
+         WHEN STATE2 =>
+            state_number <= "0010";
+            ledr(0) <= '1';
+            ledr(11) <= TenHzModCLK;
+            ledg(8) <= '0';
+            ledg(7) <= '0';
+            IF ( Operation = '1' and Default = '0' and EW = '1' and Two_counter = "01" ) THEN
+			   next_state <= STATE3;
+            ELSIF ( Operation = '1' and Default = '0' and EW = '0' and Two_counter = "01" ) THEN
+			   next_state <= STATE0;
+            ELSIF ( reg = "0111") THEN
+               next_state <= STATE3;
+            ELSE
+               next_state <= STATE2;
+            END IF;
+         WHEN STATE3 =>
+            state_number <= "0011";
+            IF ( Operation = '1' and Default = '1' and NS = '0' ) THEN
+			   ledg(7)  <= '1';
+			ELSE
+               ledg(7)  <= TenHzModCLK;
+            END IF;
+            ledr(11) <= '1';
+            ledg(8) <= '0';
+            ledr(0) <= '0';
+            IF( Operation = '1' and Default = '1' and NS = '0' and Two_counter = "01") THEN
+			   next_state <= STATE4;
+			ELSIF( Operation = '1' and Default = '0' and EW = '1' and Two_counter = "01") THEN
+			   next_state <= STATE4;
+            ELSIF (reg = "1001") THEN
+               next_state <= STATE4;
+            ELSE
+               next_state <= STATE3;
+            END IF;
+         WHEN STATE4 =>
+            state_number <= "0100";
+            ledr(11) <= '1';
+            ledg(7)  <= '1';
+            ledg(8) <= '0';
+            ledr(0) <= '0';
+            IF ( Operation = '1' and Default = '0' and EW = '1' and Four_counter = "01") THEN
+			   next_state <= STATE5;
+            ELSIF (Four_counter = "11") THEN
+			   next_state <= STATE5;
+            ELSIF (reg = "1101") THEN
+               next_state <= STATE5;
+            ELSE
+               next_state <= STATE4;
+            END IF;
+         WHEN STATE5 =>
+            state_number <= "0101";
+            ledr(11) <= '1';
+            ledr(0) <= TenHzModCLK;
+            ledg(8) <= '0';
+            ledg(7) <= '0';
+            IF ( Operation = '1' and Default = '0' and EW = '1' and Four_counter = "11") THEN
+			   next_state <= STATE0;
+            ELSIF ( Operation = '1' and Default = '1' and NS = '1' and Two_counter = "01" ) THEN
+			   next_state <= STATE0;
+			ELSIF ( Operation = '1' and Default = '1' and NS = '0' and Two_counter = "01" ) THEN
+			   next_state <= STATE3;
+            ELSIF (reg = "1111") THEN
+               next_state <= STATE0;
+            ELSE
+               next_state <= STATE5;
+            END IF;
+      END CASE;
+   END PROCESS;
+----------------------------------------------------------------------------------------------------
+   SeqLogic: PROCESS(Main1HzCLK, state) -- creats sequential logic to latch the state
+   BEGIN
+
+      IF (rising_edge(Main1HzCLK)) THEN
+		dreg <= dreg + 1;	
+         state <= next_state;                      -- on the rising edge of clock the current state is updated with next state
+         IF(state /= next_state) THEN
+			dreg <= to_unsigned(0,4);
+		 END IF;
+         reg <= reg + 1;
+         IF ( Operation = '1' and Default = '0' and state_number = "0010") THEN
+			reg <= to_unsigned(0,4);
+         ELSIF (reg = "1111") THEN
+            reg <= to_unsigned(0,4);
+         ELSIF(reg = "1001" and Operation = '1' and Default = '1' and EW = '0' ) THEN
+            reg <= to_unsigned(0,4);
+         END IF;
+
+         IF (state = STATE1) THEN
+            state_counter <= state_counter + 1;    -- on the rising edge of clock the current counter is incremented if state is STATE1
+		 END IF;
+		 IF (state = STATE3) or (state = STATE4) or (state = STATE5) THEN
+			IF ( Operation = '1' and Default = '1' and NS = '1') THEN
+				NSC <= NSC + 1;
+			END IF;
+		 ELSE
+			NSC <= "0000";
+		 END IF;
+		 IF (state = STATE0) or (state = STATE1) or (state = STATE2) THEN
+			IF ( Operation = '1' and Default = '0' and EW = '1') THEN
+				EWC <= EWC + 1;
+			END IF;
+		 ELSE
+			EWC <= "0000";
+		 END IF;
+		 Two_counter <= Two_counter + 1;
+		 IF (Two_counter = "01") THEN
+			Two_counter <= to_unsigned(0,2);
+		 END IF;
+		 
+		 Four_counter <= Four_counter + 1;
+		 IF (Four_counter = "11") THEN
+			Four_counter <= to_unsigned(0,2);
+		 END IF;	 
+      END IF;
+   END PROCESS;
+   Operation 	<= sw(17);
+   Default  	<= sw(16);
+   NS  			<= sw(15);
+   EW 			<= sw(14);
+   ledr(16)		<= Default;
+   ledr(14)		<= EW;
+   ledr(15)     <= NS;
+   ledr(17)		<= Operation;
+
+----------------------------------------------------------------------------------------------------
+   D7S0: SevenSegment PORT MAP( state_number, '0', hex0 );
+   D7S4: SevenSegment PORT MAP( std_logic_vector(dreg), '0', hex2 );
+   D7S5: SevenSegment PORT MAP( std_logic_vector(NSC), '0', hex4 );
+   D7S6: SevenSegment PORT MAP( std_logic_vector(EWC), '0', hex6 );
+
+END SimpleCircuit;
